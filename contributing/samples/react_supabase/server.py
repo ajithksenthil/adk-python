@@ -16,8 +16,7 @@ from __future__ import annotations
 
 from google.adk.cli.fast_api import get_fast_api_app
 
-
-# FastAPI app exposing the demo agents with Supabase persistence.
+"""FastAPI app exposing the demo agents with Supabase persistence."""
 app = get_fast_api_app(
     agents_dir="contributing/samples/react_supabase",
     allow_origins=["http://localhost:3000"],
