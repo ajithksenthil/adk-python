@@ -17,7 +17,11 @@ from __future__ import annotations
 from google.adk.agents import Agent
 
 
+"""Sample multi-agent team used by the React+Supabase demo."""
+
+
 # Simple multi-agent hierarchy used by the React + Supabase demo.
+
 
 greeter = Agent(
     name="greeter",
