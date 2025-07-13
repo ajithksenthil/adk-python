@@ -20,10 +20,13 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union, TYPE_CHECKING
 
 import httpx
 from pydantic import BaseModel, Field
+
+if TYPE_CHECKING:
+  from .aml_registry_enhanced import EnhancedAMLRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -131,14 +134,25 @@ class PolicyEngine(ABC):
 class OPAPolicyEngine(PolicyEngine):
   """Open Policy Agent (OPA) based policy engine."""
   
-  def __init__(self, opa_url: str = "http://localhost:8181"):
+  def __init__(
+    self, 
+    opa_url: str = "http://localhost:8181",
+    aml_registry: Optional["EnhancedAMLRegistry"] = None
+  ):
     self.opa_url = opa_url
     self.client = httpx.AsyncClient(timeout=30.0)
     self.policies: Dict[str, PolicyRule] = {}
+    self.aml_registry = aml_registry
     
   async def evaluate(self, context: PolicyContext) -> PolicyResult:
     """Evaluate policies using OPA."""
-    # First, check local rules
+    # First, check enhanced AML registry if available
+    if self.aml_registry and context.tool_name:
+      aml_result = await self._evaluate_aml_registry(context)
+      if aml_result.decision == PolicyDecision.DENY:
+        return aml_result
+    
+    # Then, check local rules
     local_result = await self._evaluate_local_rules(context)
     if local_result.decision == PolicyDecision.DENY:
       return local_result
@@ -157,6 +171,46 @@ class OPAPolicyEngine(PolicyEngine):
       logger.warning(f"OPA evaluation failed, using local rules only: {e}")
     
     return local_result
+  
+  async def _evaluate_aml_registry(self, context: PolicyContext) -> PolicyResult:
+    """Evaluate using enhanced AML registry permission checks."""
+    try:
+      # Use agent_group format (agent_name + "_group")
+      agent_group = f"{context.agent_name}_group"
+      
+      # Check agent permission using enhanced AML registry
+      permission_result = await self.aml_registry.check_agent_permission(
+        agent_group=agent_group,
+        tool_name=context.tool_name,
+        cost=context.cost_estimate,
+        transaction_value=context.cost_estimate
+      )
+      
+      # Convert AML registry result to policy result
+      if not permission_result["allowed"]:
+        return PolicyResult(
+          decision=PolicyDecision.DENY,
+          policy_type=PolicyType.AUTONOMY,
+          policy_name="aml_registry_permission",
+          reasons=[permission_result.get("reason", "AML registry denied permission")]
+        )
+      
+      elif permission_result.get("requires_approval", False):
+        return PolicyResult(
+          decision=PolicyDecision.REQUIRE_APPROVAL,
+          policy_type=PolicyType.AUTONOMY,
+          policy_name="aml_registry_permission",
+          reasons=[permission_result.get("reason", "AML registry requires approval")],
+          required_approvals=["aml_approver"]
+        )
+      
+      # Allowed
+      return PolicyResult(decision=PolicyDecision.ALLOW)
+      
+    except Exception as e:
+      logger.warning(f"AML registry evaluation failed: {e}")
+      # Fall back to local evaluation
+      return PolicyResult(decision=PolicyDecision.ALLOW)
   
   async def _evaluate_local_rules(self, context: PolicyContext) -> PolicyResult:
     """Evaluate local policy rules."""
@@ -404,11 +458,19 @@ class OPAPolicyEngine(PolicyEngine):
 class LocalPolicyEngine(PolicyEngine):
   """Local policy engine without external dependencies."""
   
-  def __init__(self):
+  def __init__(self, aml_registry: Optional["EnhancedAMLRegistry"] = None):
     self.policies: Dict[str, PolicyRule] = {}
+    self.aml_registry = aml_registry
     
   async def evaluate(self, context: PolicyContext) -> PolicyResult:
     """Evaluate policies locally."""
+    # First, check enhanced AML registry if available
+    if self.aml_registry and context.tool_name:
+      aml_result = await OPAPolicyEngine._evaluate_aml_registry(self, context)
+      if aml_result.decision == PolicyDecision.DENY:
+        return aml_result
+    
+    # Then evaluate local rules
     return await OPAPolicyEngine._evaluate_local_rules(self, context)
   
   async def add_policy(self, policy: PolicyRule) -> bool:
@@ -428,6 +490,7 @@ class LocalPolicyEngine(PolicyEngine):
     return list(self.policies.values())
   
   # Reuse evaluation methods from OPAPolicyEngine
+  _evaluate_aml_registry = OPAPolicyEngine._evaluate_aml_registry
   _evaluate_local_rules = OPAPolicyEngine._evaluate_local_rules
   _evaluate_single_policy = OPAPolicyEngine._evaluate_single_policy
   _evaluate_budget_policy = OPAPolicyEngine._evaluate_budget_policy

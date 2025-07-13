@@ -28,7 +28,7 @@ from google.adk.prompts import SystemInstructionStaticContext
 from google.adk.runners import BaseRunner, InMemoryRunner, RunConfig
 from google.adk.toolbox import Toolbox
 
-from .aml_registry import AMLRegistry, AutonomyLevel, AutonomyCapabilities
+from .aml_registry_enhanced import EnhancedAMLRegistry, AutonomyLevel
 from .policy_engine import (
   LocalPolicyEngine,
   OPAPolicyEngine,
@@ -50,7 +50,7 @@ class PolicyEnforcedToolbox(Toolbox):
     self,
     original_toolbox: Toolbox,
     policy_engine: PolicyEngine,
-    aml_registry: AMLRegistry,
+    aml_registry: EnhancedAMLRegistry,
     treasury: Union[Treasury, "BlockchainTreasury"],
     agent_name: str,
     pillar: str,
@@ -74,8 +74,9 @@ class PolicyEnforcedToolbox(Toolbox):
     context: Optional[Any] = None
   ) -> Any:
     """Execute tool with policy enforcement."""
-    # Get agent's autonomy profile
-    profile = self._aml_registry.get_profile(self._agent_name)
+    # Get agent's autonomy profile (use agent_group format for enhanced registry)
+    agent_group = f"{self._agent_name}_group"
+    profile = await self._aml_registry.get_agent_profile(agent_group)
     if not profile:
       raise ToolExecutionError(
         f"Agent {self._agent_name} not registered in AML registry"
@@ -90,7 +91,7 @@ class PolicyEnforcedToolbox(Toolbox):
       tool_name=tool_name,
       action="execute_tool",
       parameters=arguments,
-      autonomy_level=profile.current_level,
+      autonomy_level=profile.aml_level,
       cost_estimate=cost_estimate,
       metadata={
         "pillar": self._pillar,
@@ -107,7 +108,7 @@ class PolicyEnforcedToolbox(Toolbox):
       "tool": tool_name,
       "decision": policy_result.decision.value,
       "reasons": policy_result.reasons,
-      "autonomy_level": profile.current_level
+      "autonomy_level": profile.aml_level
     })
     
     # Handle policy decision
@@ -242,7 +243,7 @@ class ControlPlaneAgent(Agent):
     wrapped_agent: Agent,
     pillar: str,
     policy_engine: Optional[PolicyEngine] = None,
-    aml_registry: Optional[AMLRegistry] = None,
+    aml_registry: Optional[EnhancedAMLRegistry] = None,
     treasury: Optional[Union[Treasury, "BlockchainTreasury"]] = None,
     initial_autonomy_level: AutonomyLevel = AutonomyLevel.AML_1,
     enable_blockchain: bool = False,
@@ -263,7 +264,7 @@ class ControlPlaneAgent(Agent):
     self._wrapped_agent = wrapped_agent
     self._pillar = pillar
     self._policy_engine = policy_engine or LocalPolicyEngine()
-    self._aml_registry = aml_registry or AMLRegistry()
+    self._aml_registry = aml_registry or EnhancedAMLRegistry()
     
     # Initialize treasury (with optional blockchain)
     if treasury:
@@ -278,12 +279,13 @@ class ControlPlaneAgent(Agent):
       else:
         self._treasury = base_treasury
     
-    # Register agent in AML registry
-    self._aml_registry.register_agent(
-      agent_name=wrapped_agent.name,
-      pillar=pillar,
-      initial_level=initial_autonomy_level
-    )
+    # Register agent in AML registry (enhanced registry is async)
+    # Note: This needs to be called asynchronously after initialization
+    self._agent_registration_pending = {
+      "agent_group": f"{wrapped_agent.name}_group",
+      "pillar": pillar,
+      "initial_level": initial_autonomy_level
+    }
     
     # Create policy-enforced toolbox
     if wrapped_agent.tools:
@@ -346,26 +348,53 @@ Remember to operate within your assigned autonomy level and pillar constraints.
     # Store reference to original agent
     self._wrapped_agent = wrapped_agent
   
+  async def initialize(self):
+    """Initialize the enhanced AML registry and register the agent."""
+    if hasattr(self._aml_registry, 'initialize'):
+      await self._aml_registry.initialize()
+    
+    # Register agent group if registration is pending
+    if hasattr(self, '_agent_registration_pending'):
+      reg_info = self._agent_registration_pending
+      await self._aml_registry.register_agent_group(
+        agent_group=reg_info["agent_group"],
+        pillar=reg_info["pillar"],
+        initial_level=reg_info["initial_level"]
+      )
+      delattr(self, '_agent_registration_pending')
+  
   async def update_autonomy_level(self, new_level: AutonomyLevel):
     """Update agent's autonomy level."""
-    profile = self._aml_registry.get_profile(self._wrapped_agent.name)
+    agent_group = f"{self._wrapped_agent.name}_group"
+    profile = await self._aml_registry.get_agent_profile(agent_group)
     if profile:
-      profile.current_level = new_level
-      profile.capabilities = AutonomyCapabilities(level=new_level)
+      if new_level > profile.aml_level:
+        await self._aml_registry.promote_agent_group(
+          agent_group, 
+          changed_by="control_plane_agent",
+          reason="Manual autonomy level update"
+        )
+      elif new_level < profile.aml_level:
+        await self._aml_registry.demote_agent_group(
+          agent_group,
+          changed_by="control_plane_agent", 
+          reason="Manual autonomy level update"
+        )
       logger.info(
         f"Updated {self._wrapped_agent.name} to autonomy level {new_level.name}"
       )
   
   async def get_policy_summary(self) -> Dict[str, Any]:
     """Get summary of current policies and constraints."""
-    profile = self._aml_registry.get_profile(self._wrapped_agent.name)
+    agent_group = f"{self._wrapped_agent.name}_group"
+    profile = await self._aml_registry.get_agent_profile(agent_group)
     budget_summary = self._treasury.get_budget_summary()
     policies = await self._policy_engine.list_policies()
     
     return {
       "agent": self._wrapped_agent.name,
       "pillar": self._pillar,
-      "autonomy_level": profile.current_level.name if profile else "Unknown",
+      "autonomy_level": profile.aml_level.name if profile else "Unknown",
       "policies": [
         {
           "name": p.name,

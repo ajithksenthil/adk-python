@@ -23,7 +23,7 @@ from typing import Dict, List
 from ..control_plane.control_plane_agent import ControlPlaneAgent
 from ..control_plane.treasury import Treasury
 from ..control_plane.policy_engine import LocalPolicyEngine
-from ..control_plane.aml_registry import AMLRegistry, AutonomyLevel
+from ..control_plane.aml_registry_enhanced import EnhancedAMLRegistry, AutonomyLevel
 from ..data_mesh.event_bus import EventBusFactory, EventHandler, Topics
 from ..data_mesh.lineage_service import LineageService
 
@@ -51,7 +51,7 @@ class EnterpriseOrchestrator:
     self.lineage_service = LineageService()
     self.treasury = Treasury(total_budget=1000000.0)
     self.policy_engine = LocalPolicyEngine()
-    self.aml_registry = AMLRegistry()
+    self.aml_registry = EnhancedAMLRegistry()
     
     # Initialize pillar registry
     self.pillar_registry = PillarRegistry()
@@ -62,6 +62,9 @@ class EnterpriseOrchestrator:
   async def initialize(self):
     """Initialize all business pillars and their agents."""
     logger.info("🚀 Initializing AI-Native Enterprise Architecture")
+    
+    # Initialize enhanced AML registry
+    await self.aml_registry.initialize()
     
     # Setup event handlers for cross-pillar communication
     await self._setup_event_handlers()
@@ -144,27 +147,28 @@ class EnterpriseOrchestrator:
     """Configure autonomy levels for different agents."""
     autonomy_config = {
       # High autonomy for well-tested operations
-      "ad_bidder": AutonomyLevel.AML_4,
-      "pricing_bot": AutonomyLevel.AML_3,
-      "refund_bot": AutonomyLevel.AML_3,
+      "ad_bidder_agents": {"level": AutonomyLevel.AML_4, "pillar": "Growth Engine"},
+      "pricing_bot_agents": {"level": AutonomyLevel.AML_3, "pillar": "Growth Engine"},
+      "refund_bot_agents": {"level": AutonomyLevel.AML_3, "pillar": "Customer Success"},
       
       # Medium autonomy for standard operations
-      "support_responder": AutonomyLevel.AML_2,
-      "quote_generator": AutonomyLevel.AML_2,
-      "po_issuer": AutonomyLevel.AML_2,
+      "support_responder_agents": {"level": AutonomyLevel.AML_2, "pillar": "Customer Success"},
+      "quote_generator_agents": {"level": AutonomyLevel.AML_2, "pillar": "Growth Engine"},
+      "po_issuer_agents": {"level": AutonomyLevel.AML_2, "pillar": "Resource & Supply"},
       
       # Lower autonomy for critical operations
-      "budget_governor": AutonomyLevel.AML_1,
-      "risk_auditor": AutonomyLevel.AML_1,
-      "security_sentinel": AutonomyLevel.AML_1,
+      "budget_governor_agents": {"level": AutonomyLevel.AML_1, "pillar": "Mission & Governance"},
+      "risk_auditor_agents": {"level": AutonomyLevel.AML_1, "pillar": "Mission & Governance"},
+      "security_sentinel_agents": {"level": AutonomyLevel.AML_1, "pillar": "Platform & Infra"},
     }
     
-    for agent_name, level in autonomy_config.items():
-      self.aml_registry.register_agent(agent_name, "AI-Native Enterprise")
-      profile = self.aml_registry.get_profile(agent_name)
-      if profile:
-        profile.autonomy_level = level
-        logger.info(f"Set {agent_name} to {level.name}")
+    for agent_group, config in autonomy_config.items():
+      await self.aml_registry.register_agent_group(
+        agent_group=agent_group,
+        pillar=config["pillar"],
+        initial_level=config["level"]
+      )
+      logger.info(f"Registered {agent_group} at {config['level'].name} for {config['pillar']}")
   
   async def simulate_enterprise_day(self):
     """Simulate a full day of enterprise operations."""
@@ -469,6 +473,7 @@ async def demonstrate_cross_pillar_workflow():
   logger.info(f"Cross-pillar workflow result: {result['success']}")
   logger.info(f"Trace ID: {result['trace_id']}")
   
+  await orchestrator.aml_registry.shutdown()
   await orchestrator.event_bus.close()
 
 
@@ -494,6 +499,7 @@ async def main():
     await demonstrate_cross_pillar_workflow()
     
     # Cleanup
+    await orchestrator.aml_registry.shutdown()
     await orchestrator.event_bus.close()
     
     print("\n✅ All demonstrations completed successfully!")
