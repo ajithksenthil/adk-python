@@ -69,6 +69,7 @@ class ToolCall:
     status: str = "pending"
     result: Optional[Any] = None
     error: Optional[str] = None
+    state_delta: Optional[Dict[str, Any]] = None
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
@@ -79,7 +80,8 @@ class ToolCall:
             "timestamp": self.timestamp.isoformat(),
             "status": self.status,
             "result": self.result,
-            "error": self.error
+            "error": self.error,
+            "state_delta": self.state_delta
         }
 
 

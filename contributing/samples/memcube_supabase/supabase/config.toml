@@ -1,0 +1,66 @@
+# Supabase Configuration for MemCube
+
+[project]
+name = "MemCube Memory System"
+version = "1.0.0"
+
+[api]
+enabled = true
+port = 54321
+schemas = ["public"]
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
+
+[db]
+port = 54322
+pool_size = 10
+max_connections = 100
+shadow_databases_enabled = true
+
+[studio]
+enabled = true
+port = 54323
+
+[storage]
+enabled = true
+file_size_limit = "52428800" # 50MB
+buckets = [
+  { id = "memory-payloads", name = "memory-payloads", public = false, allowed_mime_types = ["text/*", "application/json", "application/octet-stream"] }
+]
+
+[auth]
+enabled = true
+site_url = "http://localhost:3000"
+additional_redirect_urls = ["http://localhost:3001"]
+jwt_expiry = 3600
+enable_signup = true
+email.enable_signup = true
+email.enable_confirmations = false
+
+[auth.providers]
+email = { enabled = true }
+
+[functions]
+enabled = true
+verify_jwt = true
+
+[[functions.env]]
+OPENAI_API_KEY = "env(OPENAI_API_KEY)"
+MARKETPLACE_WEBHOOK_URL = "env(MARKETPLACE_WEBHOOK_URL)"
+
+[realtime]
+enabled = true
+ip_version = "IPv4"
+
+# Vector extension configuration
+[db.extensions]
+vector = { enabled = true, schema = "public" }
+
+# Cron jobs (if pg_cron available)
+[db.cron]
+enabled = false # Enable if pg_cron extension is available
+jobs = [
+  { name = "update_lifecycle", schedule = "0 * * * *", command = "SELECT update_memory_lifecycle();" },
+  { name = "refresh_stats", schedule = "0 * * * *", command = "SELECT refresh_memory_stats();" },
+  { name = "cleanup_expired", schedule = "0 2 * * *", command = "DELETE FROM memories WHERE lifecycle = 'EXPIRED' AND updated_at < now() - interval '7 days';" }
+]

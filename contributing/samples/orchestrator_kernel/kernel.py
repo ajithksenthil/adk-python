@@ -36,6 +36,8 @@ from .request_router import (
     Request, RequestRouter, RouteConfig, WorkerNode,
     RequestPriority
 )
+from .state_client import StateMemoryClient, StateSnapshot
+from ..state_memory_service.agent_sdk import StateDeltaProducer
 
 # External integrations
 import sys
@@ -75,6 +77,8 @@ class KernelConfig:
     enable_policy_checks: bool = True
     enable_event_bus: bool = True
     enable_lineage_tracking: bool = True
+    enable_state_memory: bool = True
+    state_memory_url: str = "http://localhost:8000"
     graph_cache_size: int = 100
     worker_pool_size: int = 10
     request_queue_size: int = 1000
@@ -128,6 +132,8 @@ class OrchestratorKernel:
         self._event_bus: Optional[Any] = None
         self._lineage_service: Optional[Any] = None
         self._observability: Optional[Any] = None
+        self._state_memory_client: Optional[StateMemoryClient] = None
+        self._state_delta_producer: Optional[StateDeltaProducer] = None
         
         # Execution state
         self._active_executions: Dict[str, ExecutionContext] = {}
@@ -175,6 +181,13 @@ class OrchestratorKernel:
             self._observability = observability
             logger.info("Observability integration enabled")
         
+        # Set up State Memory Service client
+        if self.config.enable_state_memory:
+            self._state_memory_client = StateMemoryClient(self.config.state_memory_url)
+            self._state_delta_producer = StateDeltaProducer()
+            self._state_delta_producer.initialize()
+            logger.info("State Memory Service integration enabled")
+        
         # Register node executors
         self._register_node_executors()
         
@@ -197,6 +210,10 @@ class OrchestratorKernel:
         # Wait for tasks to complete
         if self._background_tasks:
             await asyncio.gather(*self._background_tasks, return_exceptions=True)
+        
+        # Clean up state delta producer
+        if self._state_delta_producer:
+            self._state_delta_producer.close()
         
         self.status = KernelStatus.STOPPED
         logger.info("Orchestrator Kernel shutdown complete")
@@ -355,6 +372,18 @@ class OrchestratorKernel:
         context: ExecutionContext
     ) -> Dict[str, Any]:
         """Execute request on worker."""
+        # Get state from State Memory Service
+        state_snapshot = None
+        if self._state_memory_client and request.metadata.get("fsa_id"):
+            try:
+                state_snapshot = await self._state_memory_client.get_state(
+                    tenant_id=context.tenant_id,
+                    fsa_id=request.metadata["fsa_id"]
+                )
+                logger.info(f"Retrieved state version {state_snapshot.version} for FSA {request.metadata['fsa_id']}")
+            except Exception as e:
+                logger.warning(f"Failed to retrieve state: {e}")
+        
         # Get graph for execution
         graph_name = f"{request.pillar}_{request.agent_type}"
         graph = self._graph_registry.get_graph(graph_name)
@@ -387,14 +416,16 @@ class OrchestratorKernel:
         
         react_loop = ReactLoop(loop_config)
         
-        # Set LLM handler
-        react_loop.set_llm_handler(self._create_llm_handler(worker))
+        # Set LLM handler with state context
+        react_loop.set_llm_handler(self._create_llm_handler(worker, state_snapshot))
         
         # Execute graph with ReAct loop
         execution_context = {
             "request": request.to_dict(),
             "context": context.to_dict(),
-            "react_loop": react_loop
+            "react_loop": react_loop,
+            "state_snapshot": state_snapshot,
+            "fsa_id": request.metadata.get("fsa_id")
         }
         
         result = await self._graph_scheduler.execute_graph(
@@ -459,23 +490,80 @@ class OrchestratorKernel:
     
     def _get_available_tools(self, pillar: str) -> Dict[str, Callable]:
         """Get available tools for pillar."""
-        # Mock tools for demo
+        # Mock tools for demo with state delta support
+        async def create_refund(**kwargs):
+            amount = kwargs.get("amount", 50)
+            reason = kwargs.get("reason", "Service issue")
+            return {
+                "status": "success",
+                "result": f"Refund of ${amount} processed",
+                "state_delta": {
+                    "task_status": {
+                        f"REFUND-{kwargs.get('context', {}).get('request_id', 'XXX')}": "COMPLETED"
+                    },
+                    "budget_remaining": {"$inc": -amount}
+                }
+            }
+        
+        async def complete_task(**kwargs):
+            task_id = kwargs.get("task_id", "TASK-001")
+            return {
+                "status": "success",
+                "result": f"Task {task_id} completed",
+                "state_delta": {
+                    "task_status": {
+                        task_id: "COMPLETED"
+                    }
+                }
+            }
+        
+        async def update_inventory(**kwargs):
+            item = kwargs.get("item", "kitkats")
+            quantity = kwargs.get("quantity", 1000)
+            return {
+                "status": "success",
+                "result": f"Added {quantity} units of {item}",
+                "state_delta": {
+                    "inventory": {
+                        item: {"$inc": quantity}
+                    }
+                }
+            }
+        
         async def mock_tool(**kwargs):
             return {"status": "success", "result": "Tool executed"}
         
-        # Would return actual tool implementations
-        return {
-            "create_refund": mock_tool,
-            "send_email": mock_tool,
+        # Return tools based on pillar
+        tools = {
+            "customer_success": {
+                "create_refund": create_refund,
+                "send_email": mock_tool,
+                "query_database": mock_tool
+            },
+            "resource_supply": {
+                "update_inventory": update_inventory,
+                "complete_task": complete_task,
+                "query_database": mock_tool
+            }
+        }
+        
+        return tools.get(pillar, {
+            "execute_action": mock_tool,
             "query_database": mock_tool,
             "call_api": mock_tool
-        }
+        })
     
-    def _create_llm_handler(self, worker: WorkerNode) -> Callable:
+    def _create_llm_handler(self, worker: WorkerNode, state_snapshot: Optional[StateSnapshot] = None) -> Callable:
         """Create LLM handler for worker."""
         async def llm_handler(prompt: str, context: Dict[str, Any]) -> Dict[str, Any]:
+            # Include state summary in the prompt
+            enhanced_prompt = prompt
+            if state_snapshot:
+                state_context = f"\n\n=== Current Project State (v{state_snapshot.version}) ===\n{state_snapshot.summary}\n================\n\n"
+                enhanced_prompt = state_context + prompt
+                
             # Mock LLM response
-            # In production, would call actual LLM service on worker
+            # In production, would call actual LLM service on worker with enhanced_prompt
             return {
                 "thought": "I need to analyze the customer's request",
                 "reasoning": "The customer is asking for a refund",
@@ -520,8 +608,70 @@ class OrchestratorKernel:
         if not tool_handler:
             raise ValueError(f"Unknown tool: {tool_name}")
         
+        # Get state version before tool execution
+        state_version_before = None
+        if self._state_memory_client and context.get("fsa_id"):
+            try:
+                state_before = await self._state_memory_client.get_state(
+                    context.get("context", {}).get("tenant_id", ""),
+                    context.get("fsa_id")
+                )
+                state_version_before = state_before.version if state_before else 0
+            except Exception:
+                pass
+        
         # Execute tool
         result = await tool_handler(**tool_params, context=context)
+        
+        # Check if tool returned a state delta
+        if isinstance(result, dict) and "state_delta" in result:
+            state_delta = result["state_delta"]
+            
+            # Get required context
+            exec_context = context.get("context", {})
+            fsa_id = context.get("fsa_id")
+            
+            if state_delta and fsa_id and self._state_delta_producer:
+                try:
+                    # Publish state delta to Kafka
+                    success = self._state_delta_producer.propose_state_delta(
+                        tenant_id=exec_context.get("tenant_id", ""),
+                        fsa_id=fsa_id,
+                        agent_name=f"{exec_context.get('pillar', '')}_{exec_context.get('agent_type', '')}",
+                        delta=state_delta,
+                        lineage_id=exec_context.get("lineage_id", "")
+                    )
+                    
+                    if success:
+                        logger.info(f"Published state delta for tool {tool_name}")
+                    else:
+                        logger.warning(f"Failed to publish state delta for tool {tool_name}")
+                        
+                except Exception as e:
+                    logger.error(f"Error publishing state delta: {e}")
+        
+        # Get state version after if delta was applied
+        state_version_after = state_version_before
+        if isinstance(result, dict) and "state_delta" in result and self._state_memory_client and context.get("fsa_id"):
+            try:
+                # Wait a bit for state to be updated
+                await asyncio.sleep(0.1)
+                state_after = await self._state_memory_client.get_state(
+                    context.get("context", {}).get("tenant_id", ""),
+                    context.get("fsa_id")
+                )
+                state_version_after = state_after.version if state_after else state_version_before
+            except Exception:
+                pass
+        
+        # Add observability tracking
+        if self._observability and state_version_before is not None:
+            # Would add to current span
+            logger.info(f"State version transition: {state_version_before} -> {state_version_after}")
+        
+        # Include version info in result
+        result["state_version_before"] = state_version_before
+        result["state_version_after"] = state_version_after
         
         return {"tool_result": result}
     
