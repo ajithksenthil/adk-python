@@ -1,6 +1,6 @@
 # MemCube Supabase Backend
 
-A production-ready Supabase implementation of the MemCube memory system for AI agents. This provides a serverless, scalable backend with Edge Functions, real-time subscriptions, and built-in authentication.
+A production-ready Supabase implementation of the MemCube memory system for AI agents. This provides a serverless, scalable backend with Edge Functions, real-time subscriptions, built-in authentication, and marketplace integration for sharing and discovering MemCubes across projects.
 
 ## 🚀 Quick Start
 
