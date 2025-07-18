@@ -15,10 +15,11 @@ from .models import (
     InsightCard
 )
 
-from .storage import (
-    MemCubeStorage,
-    SupabaseMemCubeStorage
-)
+from .storage import MemCubeStorage
+try:  # Optional dependency
+  from .storage import SupabaseMemCubeStorage
+except Exception:  # pragma: no cover - ignore if supabase missing
+  SupabaseMemCubeStorage = None
 
 from .operator import (
     MemoryOperator,
