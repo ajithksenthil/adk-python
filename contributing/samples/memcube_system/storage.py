@@ -11,6 +11,7 @@ from typing import Dict
 from typing import List
 from typing import Optional
 from typing import Tuple
+import uuid
 
 import aiohttp
 import faiss
@@ -56,6 +57,28 @@ class MemCubeStorage:
 
   async def archive_memory(self, memory_id: str) -> bool:
     """Archive a memory cube."""
+    raise NotImplementedError
+
+  async def create_chain(
+      self,
+      project_id: str,
+      label: str,
+      created_by: str,
+      tags: Optional[List[str]] = None,
+  ) -> str:
+    """Create a memory chain."""
+    raise NotImplementedError
+
+  async def append_to_chain(self, chain_id: str, memory_id: str) -> bool:
+    """Append memory to chain."""
+    raise NotImplementedError
+
+  async def remove_from_chain(self, chain_id: str, memory_id: str) -> bool:
+    """Remove memory from chain."""
+    raise NotImplementedError
+
+  async def get_chain(self, chain_id: str) -> List[MemCube]:
+    """Retrieve ordered memories from chain."""
     raise NotImplementedError
 
 
@@ -406,6 +429,81 @@ class SupabaseMemCubeStorage(MemCubeStorage):
 
     except Exception as e:
       logger.error(f"Failed to get memories for task {task_id}: {e}")
+      return []
+
+  async def create_chain(
+      self,
+      project_id: str,
+      label: str,
+      created_by: str,
+      tags: Optional[List[str]] = None,
+  ) -> str:
+    chain_id = str(uuid.uuid4())
+    try:
+      data = {
+          "id": chain_id,
+          "project_id": project_id,
+          "label": label,
+          "created_by": created_by,
+          "created_at": datetime.utcnow().isoformat(),
+          "tags": json.dumps(tags or []),
+      }
+      self.client.table("memory_chains").insert(data).execute()
+      return chain_id
+    except Exception as e:
+      logger.error(f"Failed to create chain: {e}")
+      return chain_id
+
+  async def append_to_chain(self, chain_id: str, memory_id: str) -> bool:
+    try:
+      result = (
+          self.client.table("memory_chain_links")
+          .select("position")
+          .eq("chain_id", chain_id)
+          .order("position", desc=True)
+          .limit(1)
+          .execute()
+      )
+      pos = result.data[0]["position"] + 1 if result.data else 1
+      link = {
+          "chain_id": chain_id,
+          "memory_id": memory_id,
+          "position": pos,
+          "added_at": datetime.utcnow().isoformat(),
+      }
+      self.client.table("memory_chain_links").insert(link).execute()
+      return True
+    except Exception as e:
+      logger.error(f"Failed to append {memory_id} to chain {chain_id}: {e}")
+      return False
+
+  async def remove_from_chain(self, chain_id: str, memory_id: str) -> bool:
+    try:
+      self.client.table("memory_chain_links").delete().eq(
+          "chain_id", chain_id
+      ).eq("memory_id", memory_id).execute()
+      return True
+    except Exception as e:
+      logger.error(f"Failed to remove {memory_id} from chain {chain_id}: {e}")
+      return False
+
+  async def get_chain(self, chain_id: str) -> List[MemCube]:
+    try:
+      result = (
+          self.client.table("memory_chain_links")
+          .select("memory_id, position")
+          .eq("chain_id", chain_id)
+          .order("position")
+          .execute()
+      )
+      ordered = []
+      for row in result.data:
+        mem = await self.get_memory(row["memory_id"])
+        if mem:
+          ordered.append(mem)
+      return ordered
+    except Exception as e:
+      logger.error(f"Failed to get chain {chain_id}: {e}")
       return []
 
   # Private helper methods

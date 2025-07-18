@@ -102,6 +102,15 @@ class InsightCreateRequest(BaseModel):
   sentiment: float = Field(0.0, ge=-1.0, le=1.0)
 
 
+class ChainCreateRequest(BaseModel):
+  """Request to create a memory chain."""
+
+  project_id: str
+  label: str
+  created_by: str
+  tags: List[str] = Field(default_factory=list)
+
+
 # Lifecycle management
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -349,6 +358,52 @@ async def get_task_memories(task_id: str):
 
   return {
       "task_id": task_id,
+      "memories": [
+          {
+              "id": m.id,
+              "label": m.label,
+              "type": m.type.value,
+              "content": m.to_prompt_text(),
+          }
+          for m in memories
+      ],
+      "count": len(memories),
+  }
+
+
+# Memory chains
+@app.post("/chains", response_model=Dict[str, Any])
+async def create_chain(request: ChainCreateRequest):
+  chain_id = await storage.create_chain(
+      project_id=request.project_id,
+      label=request.label,
+      created_by=request.created_by,
+      tags=request.tags,
+  )
+  return {"id": chain_id, "label": request.label}
+
+
+@app.post("/chains/{chain_id}/memories")
+async def add_memory_to_chain(chain_id: str, memory_id: str = Body(...)):
+  success = await storage.append_to_chain(chain_id, memory_id)
+  if not success:
+    raise HTTPException(400, "Failed to append memory to chain")
+  return {"status": "added", "chain_id": chain_id, "memory_id": memory_id}
+
+
+@app.delete("/chains/{chain_id}/memories/{memory_id}")
+async def remove_memory_from_chain(chain_id: str, memory_id: str):
+  success = await storage.remove_from_chain(chain_id, memory_id)
+  if not success:
+    raise HTTPException(400, "Failed to remove memory from chain")
+  return {"status": "removed", "chain_id": chain_id, "memory_id": memory_id}
+
+
+@app.get("/chains/{chain_id}")
+async def get_chain(chain_id: str):
+  memories = await storage.get_chain(chain_id)
+  return {
+      "chain_id": chain_id,
       "memories": [
           {
               "id": m.id,

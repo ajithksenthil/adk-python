@@ -265,3 +265,25 @@ class MemoryScheduleRequest(BaseModel):
   include_insights: bool = True
   query_text: Optional[str] = None
   top_k: int = 10
+
+
+@dataclass
+class MemoryChain:
+  """Ordered chain of memories."""
+
+  project_id: str
+  label: str
+  created_by: str
+  id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+  created_at: datetime = Field(default_factory=datetime.utcnow)
+  tags: List[str] = Field(default_factory=list)
+
+
+@dataclass
+class MemoryChainLink:
+  """Link between a chain and a memory."""
+
+  chain_id: str
+  memory_id: str
+  position: int
+  added_at: datetime = Field(default_factory=datetime.utcnow)
