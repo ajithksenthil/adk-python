@@ -286,13 +286,18 @@ class MemoryScheduler:
         pass
 
   async def schedule_request(
-      self, request: MemoryScheduleRequest
+      self,
+      request: MemoryScheduleRequest,
+      chain_id: Optional[str] = None,
   ) -> List[MemCube]:
     """
     Schedule a memory request.
 
     Returns selected memories for the agent.
     """
+    if chain_id:
+      return await self.storage.get_chain(chain_id)
+
     # Check cache first
     cache_key = self._get_cache_key(request)
     if cache_key in self._cache:

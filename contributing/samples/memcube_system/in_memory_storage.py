@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Dict
 from typing import List
 from typing import Optional
+import uuid
 
 import faiss
 import numpy as np
@@ -19,6 +20,7 @@ class InMemoryMemCubeStorage(MemCubeStorage):
 
   def __init__(self):
     self.memories: Dict[str, MemCube] = {}
+    self.chains: Dict[str, List[str]] = {}
 
   async def store_memory(self, memory: MemCube) -> str:
     self.memories[memory.id] = memory
@@ -74,3 +76,32 @@ class InMemoryMemCubeStorage(MemCubeStorage):
 
   async def archive_memory(self, memory_id: str) -> bool:
     return self.memories.pop(memory_id, None) is not None
+
+  async def create_chain(
+      self,
+      project_id: str,
+      label: str,
+      created_by: str,
+      tags: Optional[List[str]] = None,
+  ) -> str:
+    chain_id = str(uuid.uuid4())
+    self.chains[chain_id] = []
+    return chain_id
+
+  async def append_to_chain(self, chain_id: str, memory_id: str) -> bool:
+    if chain_id not in self.chains:
+      return False
+    self.chains[chain_id].append(memory_id)
+    return True
+
+  async def remove_from_chain(self, chain_id: str, memory_id: str) -> bool:
+    if chain_id not in self.chains:
+      return False
+    if memory_id in self.chains[chain_id]:
+      self.chains[chain_id].remove(memory_id)
+      return True
+    return False
+
+  async def get_chain(self, chain_id: str) -> List[MemCube]:
+    ids = self.chains.get(chain_id, [])
+    return [self.memories[i] for i in ids if i in self.memories]
