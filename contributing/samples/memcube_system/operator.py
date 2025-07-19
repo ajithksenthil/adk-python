@@ -7,6 +7,7 @@ from datetime import timedelta
 import hashlib
 import json
 import logging
+import re
 from typing import Any
 from typing import Dict
 from typing import List
@@ -28,6 +29,20 @@ from .models import MemoryType
 from .storage import MemCubeStorage
 
 logger = logging.getLogger(__name__)
+
+# Simple regex-based PII detector for demonstration
+_PII_PATTERNS = [
+    re.compile(r"[A-Za-z]+ [A-Za-z]+"),
+    re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+]
+
+
+def _contains_pii(text: str) -> bool:
+  """Return True if the text appears to contain PII."""
+  for pattern in _PII_PATTERNS:
+    if pattern.search(text):
+      return True
+  return False
 
 
 @dataclass
@@ -390,6 +405,9 @@ class MemoryOperator:
         embedding_sig=compute_embedding(content),
     )
 
+    if _contains_pii(content):
+      header.governance.pii_tagged = True
+
     # Create payload
     payload = MemCubePayload(
         type=MemoryType.PLAINTEXT,
@@ -438,6 +456,8 @@ class MemoryOperator:
   ) -> MemCube:
     """Convert insight card to memory."""
     memory = insight_card.to_memcube(project_id, created_by)
+    if _contains_pii(memory.payload.content):
+      memory.header.governance.pii_tagged = True
     await self.storage.store_memory(memory)
     return memory
 
@@ -481,6 +501,9 @@ class MemoryOperator:
         content=synthesized_content,
         token_count=len(synthesized_content.split()),
     )
+
+    if _contains_pii(synthesized_content):
+      header.governance.pii_tagged = True
 
     memory = MemCube(header=header, payload=payload)
     await self.storage.store_memory(memory)

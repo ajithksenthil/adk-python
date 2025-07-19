@@ -12,6 +12,7 @@ from typing import List
 from typing import Optional
 from typing import Tuple
 import uuid
+import secrets
 
 import aiohttp
 import faiss
@@ -36,6 +37,29 @@ from .models import StorageMode
 logger = logging.getLogger(__name__)
 
 
+class SimpleKeyService:
+  """Placeholder key management service."""
+
+  _keys: Dict[str, bytes] = {}
+
+  @classmethod
+  def generate_key(cls, memory_id: str) -> bytes:
+    key = secrets.token_bytes(16)
+    cls._keys[memory_id] = key
+    return key
+
+  @classmethod
+  def get_key(cls, memory_id: str) -> Optional[bytes]:
+    return cls._keys.get(memory_id)
+
+
+def _xor(data: bytes, key: bytes) -> bytes:
+  """Simple XOR encryption/decryption."""
+  return bytes(b ^ key[i % len(key)] for i, b in enumerate(data))
+
+
+
+
 class MemCubeStorage:
   """Abstract base class for MemCube storage backends."""
 
@@ -57,6 +81,14 @@ class MemCubeStorage:
 
   async def archive_memory(self, memory_id: str) -> bool:
     """Archive a memory cube."""
+    raise NotImplementedError
+
+  async def list_pii_memories(self, project_id: str) -> List[MemCube]:
+    """List memories tagged as containing PII."""
+    raise NotImplementedError
+
+  async def get_access_logs(self, project_id: str) -> List[Dict[str, Any]]:
+    """Return access log events for a project."""
     raise NotImplementedError
 
   async def create_chain(
@@ -126,7 +158,10 @@ class SupabaseMemCubeStorage(MemCubeStorage):
 
       # Store payload
       payload_ref = await self._store_payload(
-          memory.id, memory.payload, storage_mode
+          memory.id,
+          memory.payload,
+          storage_mode,
+          encrypt=memory.header.governance.pii_tagged,
       )
 
       # Prepare header data for DB
@@ -225,7 +260,7 @@ class SupabaseMemCubeStorage(MemCubeStorage):
           write_roles=governance_data.get("write_roles", ["AGENT"]),
           ttl_days=governance_data.get("ttl_days", 365),
           shareable=governance_data.get("shareable", True),
-          license=governance_data.get("license"),
+          license=governance_data.get("license", []),
           pii_tagged=governance_data.get("pii_tagged", False),
       )
 
@@ -258,6 +293,7 @@ class SupabaseMemCubeStorage(MemCubeStorage):
           header_data["payload_ref"],
           StorageMode(header_data["storage_mode"]),
           MemoryType(header_data["type"]),
+          encrypted=governance.pii_tagged,
       )
 
       if not payload:
@@ -406,6 +442,24 @@ class SupabaseMemCubeStorage(MemCubeStorage):
       logger.error(f"Failed to archive memory {memory_id}: {e}")
       return False
 
+  async def list_pii_memories(self, project_id: str) -> List[MemCube]:
+    query = MemoryQuery(project_id=project_id)
+    mems = await self.query_memories(query)
+    return [m for m in mems if m.header.governance.pii_tagged]
+
+  async def get_access_logs(self, project_id: str) -> List[Dict[str, Any]]:
+    try:
+      result = (
+          self.client.table("memory_events")
+          .select("*")
+          .eq("project_id", project_id)
+          .execute()
+      )
+      return result.data or []
+    except Exception as e:
+      logger.error(f"Failed to fetch access logs: {e}")
+      return []
+
   async def link_memory_to_task(
       self, memory_id: str, task_id: str, role: str = "READ"
   ) -> bool:
@@ -530,35 +584,40 @@ class SupabaseMemCubeStorage(MemCubeStorage):
       return StorageMode.COLD
 
   async def _store_payload(
-      self, memory_id: str, payload: MemCubePayload, mode: StorageMode
+      self,
+      memory_id: str,
+      payload: MemCubePayload,
+      mode: StorageMode,
+      *,
+      encrypt: bool = False,
   ) -> str:
     """Store payload based on storage mode."""
-    if mode == StorageMode.INLINE:
-      # Store directly in DB as JSON
-      if isinstance(payload.content, str):
-        return payload.content
-      elif isinstance(payload.content, bytes):
-        return base64.b64encode(payload.content).decode()
-      else:
-        return json.dumps(payload.content)
+    content_bytes = self._serialize_payload(payload)
 
-    elif mode == StorageMode.COMPRESSED:
-      # Compress and store in DB
+    if mode == StorageMode.COMPRESSED:
       import gzip
+      content_bytes = gzip.compress(content_bytes)
 
-      content_bytes = self._serialize_payload(payload)
-      compressed = gzip.compress(content_bytes)
-      return base64.b64encode(compressed).decode()
+    if encrypt:
+      key = SimpleKeyService.generate_key(memory_id)
+      content_bytes = _xor(content_bytes, key)
+      return base64.b64encode(content_bytes).decode()
+
+    if mode == StorageMode.INLINE:
+      if isinstance(payload.content, str) and not encrypt:
+        return payload.content
+      return base64.b64encode(content_bytes).decode()
 
     else:  # COLD storage
-      # Store in blob storage
+      if encrypt:
+        key = SimpleKeyService.generate_key(memory_id)
+        encrypted_bytes = _xor(content_bytes, key)
+        return base64.b64encode(encrypted_bytes).decode()
       if self.blob_storage_url:
         return await self._store_to_blob(memory_id, payload)
-      else:
-        # Fallback to compressed storage
-        return await self._store_payload(
-            memory_id, payload, StorageMode.COMPRESSED
-        )
+      return await self._store_payload(
+          memory_id, payload, StorageMode.COMPRESSED
+      )
 
   async def _retrieve_payload(
       self,
@@ -566,11 +625,23 @@ class SupabaseMemCubeStorage(MemCubeStorage):
       payload_ref: str,
       mode: StorageMode,
       mem_type: MemoryType,
+      *,
+      encrypted: bool = False,
   ) -> Optional[MemCubePayload]:
     """Retrieve payload based on storage mode."""
     try:
-      if mode == StorageMode.INLINE:
-        # Direct content
+      if encrypted:
+        data = base64.b64decode(payload_ref)
+        key = SimpleKeyService.get_key(memory_id)
+        if not key:
+          raise ValueError("missing key")
+        data = _xor(data, key)
+        if mode == StorageMode.COMPRESSED:
+          import gzip
+          data = gzip.decompress(data)
+        content = self._deserialize_payload(data, mem_type)
+
+      elif mode == StorageMode.INLINE:
         if mem_type == MemoryType.PLAINTEXT:
           content = payload_ref
         elif mem_type == MemoryType.ACTIVATION:
@@ -579,9 +650,7 @@ class SupabaseMemCubeStorage(MemCubeStorage):
           content = json.loads(payload_ref)
 
       elif mode == StorageMode.COMPRESSED:
-        # Decompress
         import gzip
-
         compressed = base64.b64decode(payload_ref)
         content_bytes = gzip.decompress(compressed)
         content = self._deserialize_payload(content_bytes, mem_type)
@@ -593,7 +662,11 @@ class SupabaseMemCubeStorage(MemCubeStorage):
         else:
           # Try as compressed
           return await self._retrieve_payload(
-              memory_id, payload_ref, StorageMode.COMPRESSED, mem_type
+              memory_id,
+              payload_ref,
+              StorageMode.COMPRESSED,
+              mem_type,
+              encrypted=encrypted,
           )
 
       return MemCubePayload(

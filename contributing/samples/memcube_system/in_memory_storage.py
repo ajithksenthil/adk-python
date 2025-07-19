@@ -129,6 +129,16 @@ class InMemoryMemCubeStorage(MemCubeStorage):
       return True
     return False
 
+  async def list_pii_memories(self, project_id: str) -> List[MemCube]:
+    return [
+        m
+        for m in self.memories.values()
+        if m.header.project_id == project_id and m.header.governance.pii_tagged
+    ]
+
+  async def get_access_logs(self, project_id: str) -> List[Dict[str, Any]]:
+    return [e for e in self.events if e.get("project_id") == project_id]
+
   async def get_chain(self, chain_id: str) -> List[MemCube]:
     ids = self.chains.get(chain_id, [])
     return [self.memories[i] for i in ids if i in self.memories]

@@ -57,7 +57,7 @@ class MemoryGovernance:
   write_roles: List[str] = Field(default_factory=lambda: ["AGENT"])
   ttl_days: int = 365
   shareable: bool = True
-  license: Optional[str] = None  # SPDX identifier
+  license: List[str] = Field(default_factory=list)  # SPDX identifiers
   pii_tagged: bool = False
 
 
