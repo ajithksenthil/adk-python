@@ -122,6 +122,27 @@ class MemCubeClient:
       logger.error(f"Error storing memory: {e}")
       return None
 
+  async def get_recommendations(
+      self, project_id: str, limit: int = 10
+  ) -> List[Dict[str, Any]]:
+    """Fetch recommended memories for a project."""
+    if not self._session:
+      self._session = aiohttp.ClientSession()
+
+    try:
+      async with self._session.get(
+          f"{self.base_url}/memories/recommendations",
+          params={"project_id": project_id, "limit": limit},
+      ) as resp:
+        if resp.status == 200:
+          data = await resp.json()
+          return data.get("recommendations", [])
+        logger.error(f"Failed to get recommendations: {resp.status}")
+        return []
+    except Exception as e:
+      logger.error(f"Error getting recommendations: {e}")
+      return []
+
   async def submit_insight(
       self,
       agent_id: str,

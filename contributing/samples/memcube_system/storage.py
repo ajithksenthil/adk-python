@@ -184,7 +184,12 @@ class SupabaseMemCubeStorage(MemCubeStorage):
       self.client.table("memory_versions").insert(version_data).execute()
 
       # Log creation event
-      await self._log_event(memory.id, "CREATED", memory.header.created_by)
+      await self._log_event(
+          memory.id,
+          "CREATED",
+          memory.header.created_by,
+          project_id=memory.header.project_id,
+      )
 
       logger.info(f"Stored memory {memory.id} with {storage_mode.value} mode")
       return memory.id
@@ -259,7 +264,14 @@ class SupabaseMemCubeStorage(MemCubeStorage):
         logger.warning(f"Failed to retrieve payload for memory {memory_id}")
         return None
 
-      return MemCube(header=header, payload=payload)
+      memory = MemCube(header=header, payload=payload)
+      await self._log_event(
+          memory.id,
+          "RETRIEVED",
+          "system",
+          project_id=memory.header.project_id,
+      )
+      return memory
 
     except Exception as e:
       logger.error(f"Failed to get memory {memory_id}: {e}")
@@ -361,7 +373,7 @@ class SupabaseMemCubeStorage(MemCubeStorage):
       )
 
       # Log access event
-      await self._log_event(memory_id, "ACCESSED", "system")
+      await self._log_event(memory_id, "ACCESSED", "system", project_id=None)
 
       # Check if should promote to HOT
       if result.data and result.data[0]["usage_hits"] > 10:
@@ -385,7 +397,7 @@ class SupabaseMemCubeStorage(MemCubeStorage):
       )
 
       if result.data:
-        await self._log_event(memory_id, "ARCHIVED", "system")
+        await self._log_event(memory_id, "ARCHIVED", "system", project_id=None)
         return True
 
       return False
@@ -657,7 +669,10 @@ class SupabaseMemCubeStorage(MemCubeStorage):
       ).execute()
 
       await self._log_event(
-          memory_id, f"PRIORITY_CHANGED_{priority.value}", "system"
+          memory_id,
+          f"PRIORITY_CHANGED_{priority.value}",
+          "system",
+          project_id=None,
       )
 
     except Exception as e:
@@ -669,6 +684,7 @@ class SupabaseMemCubeStorage(MemCubeStorage):
       event: str,
       actor: str,
       meta: Optional[Dict[str, Any]] = None,
+      project_id: Optional[str] = None,
   ) -> None:
     """Log a memory event."""
     try:
@@ -679,6 +695,8 @@ class SupabaseMemCubeStorage(MemCubeStorage):
           "ts": datetime.utcnow().isoformat(),
           "meta": json.dumps(meta or {}),
       }
+      if project_id:
+        event_data["project_id"] = project_id
 
       self.client.table("memory_events").insert(event_data).execute()
 

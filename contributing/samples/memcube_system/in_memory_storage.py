@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from typing import Any
 from typing import Dict
 from typing import List
 from typing import Optional
+from typing import Tuple
 import uuid
 
 import faiss
@@ -21,13 +23,29 @@ class InMemoryMemCubeStorage(MemCubeStorage):
   def __init__(self):
     self.memories: Dict[str, MemCube] = {}
     self.chains: Dict[str, List[str]] = {}
+    self.events: List[Dict[str, Any]] = []
+    self.recommendations: Dict[str, List[Tuple[str, float]]] = {}
 
   async def store_memory(self, memory: MemCube) -> str:
     self.memories[memory.id] = memory
+    await self._log_event(
+        memory.id,
+        "CREATED",
+        memory.header.created_by,
+        project_id=memory.header.project_id,
+    )
     return memory.id
 
   async def get_memory(self, memory_id: str) -> Optional[MemCube]:
-    return self.memories.get(memory_id)
+    memory = self.memories.get(memory_id)
+    if memory:
+      await self._log_event(
+          memory.id,
+          "RETRIEVED",
+          "system",
+          project_id=memory.header.project_id,
+      )
+    return memory
 
   async def query_memories(self, query: MemoryQuery) -> List[MemCube]:
     mems = [
@@ -72,7 +90,16 @@ class InMemoryMemCubeStorage(MemCubeStorage):
     return mems[: query.limit]
 
   async def update_memory_usage(self, memory_id: str) -> None:
-    pass
+    memory = self.memories.get(memory_id)
+    if not memory:
+      return
+    memory.header.usage_hits += 1
+    await self._log_event(
+        memory_id,
+        "ACCESSED",
+        "system",
+        project_id=memory.header.project_id,
+    )
 
   async def archive_memory(self, memory_id: str) -> bool:
     return self.memories.pop(memory_id, None) is not None
@@ -105,3 +132,20 @@ class InMemoryMemCubeStorage(MemCubeStorage):
   async def get_chain(self, chain_id: str) -> List[MemCube]:
     ids = self.chains.get(chain_id, [])
     return [self.memories[i] for i in ids if i in self.memories]
+
+  async def _log_event(
+      self,
+      memory_id: str,
+      event: str,
+      actor: str,
+      meta: Optional[Dict[str, Any]] = None,
+      project_id: Optional[str] = None,
+  ) -> None:
+    event_data = {
+        "memory_id": memory_id,
+        "event": event,
+        "actor": actor,
+        "project_id": project_id,
+        "meta": meta or {},
+    }
+    self.events.append(event_data)
