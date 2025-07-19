@@ -118,6 +118,21 @@ async with MemoryAgent() as agent:
     # Memories are automatically managed
 ```
 
+### 4. Running Analytics Jobs
+
+Analytics jobs aggregate memory events into the `memory_analytics` table. The
+service starts the scheduler automatically, but jobs can also be run manually:
+
+```bash
+python -m memcube_system.analytics
+```
+
+Metrics are accessible via the API:
+
+```bash
+curl "http://localhost:8002/analytics/usage?project_id=my-project&period=7d"
+```
+
 ## API Quick Reference
 
 For complete API documentation with request/response examples, see [API Reference](./ARCHITECTURE.md#api-endpoints-reference).
