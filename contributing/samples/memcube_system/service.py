@@ -235,11 +235,14 @@ async def create_memory(request: MemoryCreateRequest):
 
 
 @app.get("/memories/{memory_id}")
-async def get_memory(memory_id: str):
+async def get_memory(memory_id: str, role: str = Query("MEMBER")):
   """Get a specific memory."""
   memory = await storage.get_memory(memory_id)
   if not memory:
     raise HTTPException(404, f"Memory {memory_id} not found")
+
+  if memory.header.governance.pii_tagged and role not in memory.header.governance.read_roles:
+    raise HTTPException(403, "Forbidden")
 
   # Update usage stats
   await storage.update_memory_usage(memory_id)
@@ -290,7 +293,7 @@ async def archive_memory(memory_id: str):
 
 # Memory querying
 @app.post("/memories/query")
-async def query_memories(request: MemoryQueryRequest):
+async def query_memories(request: MemoryQueryRequest, role: str = Query("MEMBER")):
   """Query memories based on criteria."""
   query = MemoryQuery(
       project_id=request.project_id,
@@ -302,6 +305,13 @@ async def query_memories(request: MemoryQueryRequest):
       query_text=request.query_text,
   )
   memories = await storage.query_memories(query)
+  if role not in {"ADMIN"}:
+    memories = [
+        m
+        for m in memories
+        if not m.header.governance.pii_tagged
+        or role in m.header.governance.read_roles
+    ]
 
   return {
       "memories": [
@@ -591,6 +601,19 @@ async def prune_cold_memories(
       "project_id": project_id,
       "archived_count": archived,
       "keep_count": keep_count,
+  }
+
+
+@app.get("/admin/audit/{project_id}")
+async def audit_project(project_id: str, role: str = Query("ADMIN")):
+  """List PII-tagged memories and access logs."""
+  if role != "ADMIN":
+    raise HTTPException(403, "Forbidden")
+  pii_mems = await storage.list_pii_memories(project_id)
+  logs = await storage.get_access_logs(project_id)
+  return {
+      "pii_memories": [m.id for m in pii_mems],
+      "access_logs": logs,
   }
 
 
