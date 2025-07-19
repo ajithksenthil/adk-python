@@ -31,6 +31,7 @@ from .operator import MemoryScheduler
 from .operator import MemorySelector
 from .storage import MemoryLifecycleManager
 from .storage import SupabaseMemCubeStorage
+from .recommendation import RecommendationEngine
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,7 @@ operator: Optional[MemoryOperator] = None
 scheduler: Optional[MemoryScheduler] = None
 marketplace: Optional[MarketplaceService] = None
 lifecycle_manager: Optional[MemoryLifecycleManager] = None
+recommender: Optional[RecommendationEngine] = None
 
 
 # Request/Response models
@@ -115,7 +117,7 @@ class ChainCreateRequest(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
   """Manage app lifecycle."""
-  global storage, operator, scheduler, marketplace, lifecycle_manager
+  global storage, operator, scheduler, marketplace, lifecycle_manager, recommender
 
   # Startup
   logger.info("Starting MemCube service...")
@@ -129,9 +131,11 @@ async def lifespan(app: FastAPI):
   scheduler = MemoryScheduler(storage, selector)
   marketplace = MarketplaceService(storage, operator, MARKETPLACE_API)
   lifecycle_manager = MemoryLifecycleManager(storage)
+  recommender = RecommendationEngine(storage)
 
   # Start scheduler
   await scheduler.start()
+  await recommender.start()
 
   logger.info("MemCube service started successfully")
 
@@ -142,6 +146,8 @@ async def lifespan(app: FastAPI):
 
   if scheduler:
     await scheduler.stop()
+  if recommender:
+    await recommender.stop()
 
   logger.info("MemCube service stopped")
 
@@ -336,6 +342,18 @@ async def schedule_memories(request: MemoryScheduleRequest):
       "total_tokens": total_tokens,
       "count": len(memories),
   }
+
+
+# Recommendations
+@app.get("/memories/recommendations")
+async def get_recommendations_endpoint(
+    project_id: str = Query(...), limit: int = Query(10)
+):
+  """Get recommended memories for a project."""
+  if not recommender:
+    raise HTTPException(503, "Recommendation engine not initialized")
+  recs = recommender.get_recommendations(project_id, limit)
+  return {"project_id": project_id, "recommendations": recs, "count": len(recs)}
 
 
 # Task-memory linking
