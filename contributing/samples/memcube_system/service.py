@@ -32,6 +32,7 @@ from .operator import MemorySelector
 from .storage import MemoryLifecycleManager
 from .storage import SupabaseMemCubeStorage
 from .recommendation import RecommendationEngine
+from .analytics import AnalyticsEngine
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,7 @@ scheduler: Optional[MemoryScheduler] = None
 marketplace: Optional[MarketplaceService] = None
 lifecycle_manager: Optional[MemoryLifecycleManager] = None
 recommender: Optional[RecommendationEngine] = None
+analytics: Optional[AnalyticsEngine] = None
 
 
 # Request/Response models
@@ -117,7 +119,7 @@ class ChainCreateRequest(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
   """Manage app lifecycle."""
-  global storage, operator, scheduler, marketplace, lifecycle_manager, recommender
+  global storage, operator, scheduler, marketplace, lifecycle_manager, recommender, analytics
 
   # Startup
   logger.info("Starting MemCube service...")
@@ -132,10 +134,12 @@ async def lifespan(app: FastAPI):
   marketplace = MarketplaceService(storage, operator, MARKETPLACE_API)
   lifecycle_manager = MemoryLifecycleManager(storage)
   recommender = RecommendationEngine(storage)
+  analytics = AnalyticsEngine(storage)
 
   # Start scheduler
   await scheduler.start()
   await recommender.start()
+  await analytics.start()
 
   logger.info("MemCube service started successfully")
 
@@ -148,6 +152,8 @@ async def lifespan(app: FastAPI):
     await scheduler.stop()
   if recommender:
     await recommender.stop()
+  if analytics:
+    await analytics.stop()
 
   logger.info("MemCube service stopped")
 
@@ -354,6 +360,18 @@ async def get_recommendations_endpoint(
     raise HTTPException(503, "Recommendation engine not initialized")
   recs = recommender.get_recommendations(project_id, limit)
   return {"project_id": project_id, "recommendations": recs, "count": len(recs)}
+
+
+# Analytics
+@app.get("/analytics/usage")
+async def get_usage_analytics(
+    project_id: str = Query(...), period: str = Query("7d")
+):
+  """Return aggregated usage analytics for a project."""
+  if not analytics:
+    raise HTTPException(503, "Analytics engine not initialized")
+  metrics = await analytics.get_usage(project_id, period)
+  return metrics
 
 
 # Task-memory linking
